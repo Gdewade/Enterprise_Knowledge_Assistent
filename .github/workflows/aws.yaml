@@ -1,0 +1,69 @@
+name: Deploy Application Docker Images to EC2 instance
+
+# Trigger 
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # This is Manual workflow -> adds a "Run workflow" button in the GitHub Actions tab
+
+jobs:
+  Continuous-Integration:
+    runs-on: ubuntu-latest # Decide on which machine should our CI runs
+
+    steps: # Individual steps which excute during job
+      - name: Checkout # This is 1st Step and Checkout is name of this step
+        uses: actions/checkout@v4 # checkout action means code from that github repo comes on Runner machine(Command line of github) and v4 means version 4 of action
+
+      # Step 2 : Authentication of AWS
+      # EC2 → Application चालवण्यासाठी server.
+      # ECR → Docker images (application चा packaged version) store करण्यासाठी
+      # IAM → AWS permissions आणि identity management.
+      - name: Configure AWS credentials # This is GitHub Action : This gives aws configration to runner
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+      
+      # Step 3 : Login to ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend + frontend images to Amazon ECR
+        env:
+          BACKEND_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO_BACKEND }}:latest
+          FRONTEND_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO_FRONTEND }}:latest
+        run: |
+          docker compose build
+          docker compose push
+
+  Continuous-Deployment:
+    needs: Continuous-Integration # Means CD dependent on CI 
+    runs-on: self-hosted
+    steps:
+      # Needed so docker-compose.yml is present on the EC2 instance
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # To pull images from ECR to EC2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Pull latest images and restart containers
+        env:
+          BACKEND_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO_BACKEND }}:latest
+          FRONTEND_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO_FRONTEND }}:latest
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          docker compose -p eka pull
+          docker compose -p eka up -d --no-build --remove-orphans
+          docker image prune -f
